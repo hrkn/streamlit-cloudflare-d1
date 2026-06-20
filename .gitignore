@@ -104,3 +104,4 @@ venv.bak/
 .logs/
 
 .wrangler
+.streamlit

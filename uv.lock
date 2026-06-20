@@ -1056,8 +1056,8 @@ source = { editable = "." }
 dependencies = [
     { name = "pandas" },
     { name = "python-dotenv" },
+    { name = "requests" },
     { name = "sqlalchemy" },
-    { name = "sqlalchemy-cloudflare-d1" },
     { name = "streamlit" },
 ]
 
@@ -1066,14 +1066,15 @@ dev = [
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "ruff" },
+    { name = "sqlalchemy-cloudflare-d1" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "pandas", specifier = ">=3.0.3" },
     { name = "python-dotenv", specifier = ">=1.2.2" },
+    { name = "requests", specifier = ">=2.34.2" },
     { name = "sqlalchemy", specifier = ">=2.0.50" },
-    { name = "sqlalchemy-cloudflare-d1", specifier = ">=0.3.10" },
     { name = "streamlit", specifier = ">=1.58.0" },
 ]
 
@@ -1082,6 +1083,7 @@ dev = [
     { name = "pytest", specifier = ">=9.1.0" },
     { name = "pytest-cov", specifier = ">=7.1.0" },
     { name = "ruff", specifier = ">=0.15.17" },
+    { name = "sqlalchemy-cloudflare-d1", specifier = ">=0.3.10" },
 ]
 
 [[package]]

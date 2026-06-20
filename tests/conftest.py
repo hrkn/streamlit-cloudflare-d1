@@ -11,7 +11,8 @@ PORT = 8787
 os.environ["CLOUDFLARE_ACCOUNT_ID"] = "test-account-id"
 os.environ["CLOUDFLARE_API_TOKEN"] = "test-api-token"
 os.environ["CLOUDFLARE_DATABASE_ID"] = "test-database-id"
-os.environ["CF_D1_BASE_URL"] = f"http://localhost:{PORT}"
+os.environ["CF_D1_BASE_URL"] = f"http://127.0.0.1:{PORT}"
+os.environ["LOCAL_DB_PATH"] = ".streamlit/test_local_d1.db"
 
 
 def is_port_open(port: int) -> bool:
@@ -27,14 +28,20 @@ def manage_wrangler_dev():
         return
 
     # ポートが開いていない場合は npx wrangler dev --port PORT を起動
-    cmd = "npx.cmd" if os.name == "nt" else "npx"
-    args = [cmd, "wrangler", "dev", "--port", str(PORT)]
+    if os.name == "nt":
+        args = ["cmd.exe", "/c", "npx.cmd", "wrangler", "dev", "--port", str(PORT)]
+    else:
+        args = ["npx", "wrangler", "dev", "--port", str(PORT)]
+
+    # ログファイルを開く
+    stdout_file = open("wrangler_stdout.log", "w")
+    stderr_file = open("wrangler_stderr.log", "w")
 
     process = subprocess.Popen(
         args,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        shell=(os.name == "nt"),
+        stdout=stdout_file,
+        stderr=stderr_file,
+        shell=False,
     )
 
     # 起動を待つ (最大10秒)
@@ -74,3 +81,15 @@ def manage_wrangler_dev():
             process.wait(timeout=5)
         except subprocess.TimeoutExpired:
             process.kill()
+
+    # ファイルをクローズ
+    stdout_file.close()
+    stderr_file.close()
+
+    # テスト終了後にローカルDBファイルを削除
+    db_file = os.environ.get("LOCAL_DB_PATH")
+    if db_file and os.path.exists(db_file):
+        try:
+            os.remove(db_file)
+        except Exception:
+            pass
