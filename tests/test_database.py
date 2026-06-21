@@ -1,5 +1,6 @@
 import os
 import time
+import unittest.mock
 
 import pytest
 import sqlalchemy
@@ -62,42 +63,6 @@ def db_reset():
     yield
 
 
-def test_save_changes_crud() -> None:
-    # 単体テスト: save_changes関数のCRUDロジックをテスト
-    d1_engine = get_d1_engine()
-
-    # テスト開始時のデータ取得
-    original_df = db.load_users()
-    assert len(original_df) == 2
-
-    # 1. 編集(Aliceの更新)、2. 削除(Bobの削除)、3. 追加(Charlieの追加)
-    changes = {
-        "edited_rows": {"0": {"name": "Alice Updated"}},
-        "added_rows": [{"name": "Charlie", "email": "charlie@example.com"}],
-        "deleted_rows": [1],  # Bob
-    }
-
-    # ロジックの実行
-    db.save_changes(changes, original_df)
-    # D1へ同期を強制実行
-    db.flush_sync_queue()
-
-    # 実行後の検証
-    updated_df = db.load_users()
-    assert len(updated_df) == 2
-
-    # 変更結果の確認
-    assert updated_df.iloc[0]["name"] == "Alice Updated"
-    assert updated_df.iloc[1]["name"] == "Charlie"
-    assert updated_df.iloc[1]["email"] == "charlie@example.com"
-
-    # データベースからBobが消えているか検証
-    with sqlalchemy.orm.Session(d1_engine) as session:
-        stmt = sqlalchemy.select(model.User).where(model.User.name == "Bob")
-        bob = session.scalars(stmt).first()
-        assert bob is None
-
-
 def test_empty_batch_coverage() -> None:
     # _send_batch が空の場合の早期リターンをカバー
     db._send_batch([], [])
@@ -137,3 +102,100 @@ def test_sync_thread_coverage() -> None:
     )
     # スレッドが 3秒スリープ + 送信するのを少し待つ
     time.sleep(3.5)
+
+
+def test_download_db_failures() -> None:
+    # download_db 関数の異常系テスト
+    local_engine = db.get_local_engine()
+
+    # 1. D1 APIレスポンスの success が False の場合
+    mock_response = unittest.mock.MagicMock()
+    mock_response.json.return_value = {
+        "success": False,
+        "errors": [{"message": "Mocked API Error"}],
+    }
+    mock_response.raise_for_status = unittest.mock.MagicMock()
+
+    with unittest.mock.patch("requests.post", return_value=mock_response):
+        with pytest.raises(RuntimeError, match="D1 export failed: Mocked API Error"):
+            db.download_db(local_engine)
+
+    # 2. signed_url が提供された場合のダウンロード処理
+    mock_post_res = unittest.mock.MagicMock()
+    mock_post_res.json.return_value = {
+        "success": True,
+        "result": {
+            "signed_url": "http://mock-signed-url.com/dump.sql",
+        },
+    }
+    mock_get_res = unittest.mock.MagicMock()
+    mock_get_res.text = "CREATE TABLE dummy (id INTEGER);"
+    mock_get_res.raise_for_status = unittest.mock.MagicMock()
+
+    with (
+        unittest.mock.patch("requests.post", return_value=mock_post_res),
+        unittest.mock.patch("requests.get", return_value=mock_get_res),
+    ):
+        db.download_db(local_engine)
+
+    # 3. sql_content が空の場合
+    mock_post_empty = unittest.mock.MagicMock()
+    mock_post_empty.json.return_value = {
+        "success": True,
+        "result": {
+            "sql": "",
+        },
+    }
+    with unittest.mock.patch("requests.post", return_value=mock_post_empty):
+        with pytest.raises(RuntimeError, match="D1 export returned empty SQL content"):
+            db.download_db(local_engine)
+
+    # 4. データベース復旧（restore）中に例外が発生した場合
+    mock_post_success = unittest.mock.MagicMock()
+    mock_post_success.json.return_value = {
+        "success": True,
+        "result": {
+            "sql": "INVALID SQL STATEMENT;",
+        },
+    }
+    with unittest.mock.patch("requests.post", return_value=mock_post_success):
+        with pytest.raises(Exception):
+            db.download_db(local_engine)
+
+
+def test_send_batch_failure() -> None:
+    # _send_batch で success が False の場合のエラー分岐をカバー
+    mock_client = unittest.mock.MagicMock()
+    mock_response = unittest.mock.MagicMock()
+    mock_response.json.return_value = {
+        "success": False,
+        "errors": [{"message": "Mock D1 Query Error"}],
+    }
+    mock_response.raise_for_status = unittest.mock.MagicMock()
+    mock_client.post.return_value = mock_response
+
+    # httpx.Client コンテキストマネージャのモック
+    with unittest.mock.patch(
+        "httpx.Client",
+        return_value=unittest.mock.MagicMock(
+            __enter__=unittest.mock.MagicMock(return_value=mock_client)
+        ),
+    ):
+        db._send_batch(
+            [{"sql": "INSERT INTO dummy VALUES (1);"}],
+            [("dummy", 1, "INSERT INTO dummy VALUES (1);")],
+        )
+
+
+def test_after_cursor_execute_exception_coverage() -> None:
+    # statement 解析中に例外が発生した場合のログ出力をカバー
+    # cursor として None を渡し、かつ statement に INSERT を含むことで、
+    # cursor.lastrowid アクセス時に AttributeError を発生させる
+    db.after_cursor_execute(
+        conn=None,
+        cursor=None,
+        statement="INSERT INTO dummy VALUES (1);",
+        parameters=[],
+        context=None,
+        executemany=False,
+    )

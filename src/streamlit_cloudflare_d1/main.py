@@ -1,10 +1,13 @@
 import logging
 
+import pandas as pd
+import sqlalchemy
+import sqlalchemy.orm
 import streamlit as st
 import streamlit.runtime.scriptrunner
 
 import streamlit_cloudflare_d1.database as database
-
+import streamlit_cloudflare_d1.model as model
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -13,6 +16,68 @@ logging.basicConfig(
     handlers=[logging.StreamHandler()],
 )
 LOGGER = logging.getLogger(__name__)
+
+
+# データの読み込み
+def load_users() -> pd.DataFrame:
+    with sqlalchemy.orm.Session(database.local_engine) as session:
+        stmt = sqlalchemy.select(model.User)
+        users = session.scalars(stmt).all()
+        # DataFrameに変換
+        data = []
+        for u in users:
+            data.append(
+                {
+                    "id": u.id,
+                    "name": u.name,
+                    "email": u.email,
+                    "role": u.role,
+                    "created_at": u.created_at,
+                }
+            )
+        return pd.DataFrame(data)
+
+
+# CRUD処理
+def save_changes(edited_data: dict, original_df: pd.DataFrame) -> None:
+    with sqlalchemy.orm.Session(database.local_engine) as session:
+        try:
+            # 1. 削除処理
+            if "deleted_rows" in edited_data and edited_data["deleted_rows"]:
+                for row_idx in edited_data["deleted_rows"]:
+                    user_id = int(original_df.iloc[row_idx]["id"])
+                    stmt = sqlalchemy.select(model.User).where(model.User.id == user_id)
+                    user = session.scalars(stmt).first()
+                    if user:
+                        session.delete(user)
+
+            # 2. 編集処理
+            if "edited_rows" in edited_data and edited_data["edited_rows"]:
+                for row_idx_str, changes in edited_data["edited_rows"].items():
+                    row_idx = int(row_idx_str)
+                    user_id = int(original_df.iloc[row_idx]["id"])
+                    stmt = sqlalchemy.select(model.User).where(model.User.id == user_id)
+                    user = session.scalars(stmt).first()
+                    if user:
+                        for col, val in changes.items():
+                            setattr(user, col, val)
+
+            # 3. 追加処理
+            if "added_rows" in edited_data and edited_data["added_rows"]:
+                for new_row in edited_data["added_rows"]:
+                    name = new_row.get("name")
+                    email = new_row.get("email")
+                    role = new_row.get("role", "user")
+                    if name:
+                        user = model.User(name=name, email=email, role=role)
+                        session.add(user)
+
+            session.commit()
+            st.success("変更を保存しました（D1へ自動同期されます）。")
+        except Exception as e:
+            session.rollback()
+            st.error(f"保存中にエラーが発生しました: {e}")
+
 
 # Streamlit UI Execution Guard
 if streamlit.runtime.scriptrunner.get_script_run_ctx() is not None:
@@ -24,7 +89,7 @@ if streamlit.runtime.scriptrunner.get_script_run_ctx() is not None:
 
     # データ読み込み
     if "df" not in st.session_state or st.button("最新の情報に更新"):
-        st.session_state.df = database.load_users()
+        st.session_state.df = load_users()
 
     df = st.session_state.df
 
@@ -60,6 +125,6 @@ if streamlit.runtime.scriptrunner.get_script_run_ctx() is not None:
 
     if has_changes:
         if st.button("変更を保存", type="primary"):
-            database.save_changes(changes, df)
-            st.session_state.df = database.load_users()
+            save_changes(changes, df)
+            st.session_state.df = load_users()
             st.rerun()

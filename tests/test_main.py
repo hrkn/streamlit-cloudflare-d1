@@ -6,6 +6,7 @@ import sqlalchemy.orm
 import streamlit.testing.v1
 
 import streamlit_cloudflare_d1.database as db
+import streamlit_cloudflare_d1.main as main
 import streamlit_cloudflare_d1.model as model
 
 _d1_engine = None
@@ -74,3 +75,48 @@ def test_streamlit_app_rendering() -> None:
     assert len(df) == 2
     assert df.iloc[0]["name"] == "Alice"
     assert df.iloc[1]["name"] == "Bob"
+
+
+def test_save_changes_crud() -> None:
+    # 単体テスト: save_changes関数のCRUDロジックをテスト
+    import queue
+
+    d1_engine = get_d1_engine()
+
+    # バックグラウンドスレッドの横取りを防ぐため、一時的にキューを差し替える
+    original_queue = db.sync_queue
+    db.sync_queue = queue.Queue()
+
+    try:
+        # テスト開始時のデータ取得
+        original_df = main.load_users()
+        assert len(original_df) == 2
+
+        # 1. 編集(Aliceの更新)、2. 削除(Bobの削除)、3. 追加(Charlieの追加)
+        changes = {
+            "edited_rows": {"0": {"name": "Alice Updated"}},
+            "added_rows": [{"name": "Charlie", "email": "charlie@example.com"}],
+            "deleted_rows": [1],  # Bob
+        }
+
+        # ロジックの実行
+        main.save_changes(changes, original_df)
+        # D1へ同期を強制実行
+        db.flush_sync_queue()
+
+        # 実行後の検証
+        updated_df = main.load_users()
+        assert len(updated_df) == 2
+
+        # 変更結果の確認
+        assert updated_df.iloc[0]["name"] == "Alice Updated"
+        assert updated_df.iloc[1]["name"] == "Charlie"
+        assert updated_df.iloc[1]["email"] == "charlie@example.com"
+
+        # データベースからBobが消えているか検証
+        with sqlalchemy.orm.Session(d1_engine) as session:
+            stmt = sqlalchemy.select(model.User).where(model.User.name == "Bob")
+            bob = session.scalars(stmt).first()
+            assert bob is None
+    finally:
+        db.sync_queue = original_queue
